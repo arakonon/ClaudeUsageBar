@@ -129,6 +129,11 @@ If you find this useful, consider:
 - **Issues:** [GitHub Issues](https://github.com/Artzainnn/claudeusagebar/issues)
 - **Releases:** [GitHub Releases](https://github.com/Artzainnn/claudeusagebar/releases)
 
+## 🔗 Other projects
+
+- **Mediaboost - Guaranteed PR feature:** [Mediaboost](https://mediaboost.press)
+- **Scalepages - Programmatic SEO:** [Scalepages](https://scalepages.co)
+
 ---
 
 **Made with ❤️ for the Claude community**
