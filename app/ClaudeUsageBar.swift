@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var usageManager: UsageManager!
     var eventMonitor: Any?
     var hotKeyRef: EventHotKeyRef?
+    var refreshTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // NSUserNotification (deprecated but works without permissions for unsigned apps)
@@ -42,10 +43,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Fetch initial data
         usageManager.fetchUsage()
 
-        // Set up timer to refresh every 5 minutes
-        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
-            self.usageManager.fetchUsage()
-        }
+        // Set up refresh timer based on settings
+        configureRefreshTimer()
 
         // Set up Cmd+U keyboard shortcut
         setupKeyboardShortcut()
@@ -66,6 +65,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             registerGlobalHotKey()
         } else {
             unregisterGlobalHotKey()
+        }
+    }
+
+    func configureRefreshTimer() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+
+        let interval = usageManager.currentRefreshInterval()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.usageManager.fetchUsage()
+        }
+
+        if usageManager.liveModeEnabled {
+            NSLog("⚡ Live mode active, refresh every 1 second")
+        } else {
+            NSLog("⏱️ Refresh interval set to \(Int(interval)) seconds")
         }
     }
 
@@ -150,6 +165,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
         unregisterGlobalHotKey()
     }
 
@@ -213,7 +230,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func updateStatusIcon(percentage: Int) {
+    func updateStatusIcon(percentage: Int, isLiveMode: Bool = false) {
         guard let button = statusItem.button else { return }
 
         // Determine color based on percentage
@@ -227,14 +244,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Create spark icon with color
-        let sparkIcon = createSparkIcon(color: color)
+        let sparkIcon = createSparkIcon(color: color, showLiveBadge: isLiveMode)
 
         // Set image and title
         button.image = sparkIcon
         button.title = " \(percentage)%"
     }
 
-    func createSparkIcon(color: NSColor) -> NSImage {
+    func createSparkIcon(color: NSColor, showLiveBadge: Bool = false) -> NSImage {
         let size = NSSize(width: 16, height: 16)
         let image = NSImage(size: size)
 
@@ -262,6 +279,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         color.setFill()
         path.fill()
+
+        if showLiveBadge {
+            let badgeRect = NSRect(x: 11, y: 11, width: 4, height: 4)
+            let badgePath = NSBezierPath(ovalIn: badgeRect)
+            NSColor.systemCyan.setFill()
+            badgePath.fill()
+        }
 
         image.unlockFocus()
         image.isTemplate = false
@@ -314,11 +338,16 @@ class UsageManager: ObservableObject {
     @Published var hasFetchedData: Bool = false
     @Published var isAccessibilityEnabled: Bool = false
     @Published var shortcutEnabled: Bool = true
+    @Published var refreshIntervalSeconds: Int = 300
+    @Published var liveModeEnabled: Bool = false
+
+    let availableRefreshIntervals: [Int] = [1200, 600, 300, 60, 30]
 
     private var statusItem: NSStatusItem?
     private var sessionCookie: String = ""
     private weak var delegate: AppDelegate?
     private var lastNotifiedThreshold: Int = 0
+    private var isFetchInProgress: Bool = false
 
     init(statusItem: NSStatusItem?, delegate: AppDelegate? = nil) {
         self.statusItem = statusItem
@@ -353,13 +382,42 @@ class UsageManager: ObservableObject {
         } else {
             shortcutEnabled = UserDefaults.standard.bool(forKey: "shortcut_enabled")
         }
+
+        let savedInterval = UserDefaults.standard.integer(forKey: "refresh_interval_seconds")
+        if availableRefreshIntervals.contains(savedInterval) {
+            refreshIntervalSeconds = savedInterval
+        } else {
+            refreshIntervalSeconds = 300
+        }
     }
 
     func saveSettings() {
         UserDefaults.standard.set(notificationsEnabled, forKey: "notifications_enabled")
         UserDefaults.standard.set(openAtLogin, forKey: "open_at_login")
         UserDefaults.standard.set(shortcutEnabled, forKey: "shortcut_enabled")
+        UserDefaults.standard.set(refreshIntervalSeconds, forKey: "refresh_interval_seconds")
         UserDefaults.standard.synchronize()
+    }
+
+    func currentRefreshInterval() -> TimeInterval {
+        if liveModeEnabled {
+            return 1.0
+        }
+        return TimeInterval(refreshIntervalSeconds)
+    }
+
+    func setRefreshInterval(_ seconds: Int) {
+        guard availableRefreshIntervals.contains(seconds) else { return }
+        refreshIntervalSeconds = seconds
+        saveSettings()
+        delegate?.configureRefreshTimer()
+        fetchUsage()
+    }
+
+    func setLiveMode(_ enabled: Bool) {
+        liveModeEnabled = enabled
+        delegate?.configureRefreshTimer()
+        fetchUsage()
     }
 
     func saveSessionCookie(_ cookie: String) {
@@ -390,7 +448,7 @@ class UsageManager: ObservableObject {
         UserDefaults.standard.set(0, forKey: "last_notified_threshold")
 
         // Update status bar to show 0%
-        delegate?.updateStatusIcon(percentage: 0)
+        delegate?.updateStatusIcon(percentage: 0, isLiveMode: liveModeEnabled)
 
         NSLog("ClaudeUsage: Cookie cleared, data reset")
     }
@@ -443,6 +501,12 @@ class UsageManager: ObservableObject {
             return
         }
 
+        guard !isFetchInProgress else {
+            NSLog("⏳ Skipping fetch - request already in progress")
+            return
+        }
+
+        isFetchInProgress = true
         isLoading = true
         errorMessage = nil
 
@@ -452,6 +516,7 @@ class UsageManager: ObservableObject {
                 DispatchQueue.main.async {
                     self?.errorMessage = "Could not get org ID from cookie"
                     self?.isLoading = false
+                    self?.isFetchInProgress = false
                 }
                 return
             }
@@ -467,6 +532,7 @@ class UsageManager: ObservableObject {
             DispatchQueue.main.async {
                 self.errorMessage = "Invalid URL"
                 self.isLoading = false
+                self.isFetchInProgress = false
             }
             return
         }
@@ -487,18 +553,20 @@ class UsageManager: ObservableObject {
 
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
-                self?.isLoading = false
+                guard let self = self else { return }
+                defer { self.isFetchInProgress = false }
+                self.isLoading = false
 
                 if let error = error {
                     NSLog("❌ Error: \(error.localizedDescription)")
-                    self?.errorMessage = "Network error"
-                    self?.updateStatusBar()
+                    self.errorMessage = "Network error"
+                    self.updateStatusBar()
                     return
                 }
 
                 guard let httpResponse = response as? HTTPURLResponse else {
-                    self?.errorMessage = "Invalid response"
-                    self?.updateStatusBar()
+                    self.errorMessage = "Invalid response"
+                    self.updateStatusBar()
                     return
                 }
 
@@ -509,12 +577,12 @@ class UsageManager: ObservableObject {
                 }
 
                 if httpResponse.statusCode == 200, let data = data {
-                    self?.parseUsageData(data)
+                    self.parseUsageData(data)
                 } else {
-                    self?.errorMessage = "HTTP \(httpResponse.statusCode)"
+                    self.errorMessage = "HTTP \(httpResponse.statusCode)"
                 }
 
-                self?.updateStatusBar()
+                self.updateStatusBar()
             }
         }.resume()
     }
@@ -603,7 +671,7 @@ class UsageManager: ObservableObject {
         let sessionPercent = Int((Double(sessionUsage) / Double(sessionLimit)) * 100)
 
         // Update the icon color
-        delegate?.updateStatusIcon(percentage: sessionPercent)
+        delegate?.updateStatusIcon(percentage: sessionPercent, isLiveMode: liveModeEnabled)
 
         // Check for notification thresholds
         checkNotificationThresholds(percentage: sessionPercent)
@@ -908,6 +976,13 @@ struct UsageView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
+                Button(usageManager.liveModeEnabled ? "Live: On" : "Live: Off") {
+                    usageManager.setLiveMode(!usageManager.liveModeEnabled)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundColor(usageManager.liveModeEnabled ? .red : .secondary)
+
                 Button("Refresh") {
                     usageManager.fetchUsage()
                 }
@@ -1047,6 +1122,35 @@ struct UsageView: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 8) {
+                        Text("Auto Refresh Interval")
+                            .font(.caption)
+
+                        Picker("Auto Refresh Interval", selection: Binding(
+                            get: { usageManager.refreshIntervalSeconds },
+                            set: { newValue in
+                                usageManager.setRefreshInterval(newValue)
+                            }
+                        )) {
+                            Text("20 min").tag(1200)
+                            Text("10 min").tag(600)
+                            Text("5 min").tag(300)
+                            Text("1 min").tag(60)
+                            Text("30 sec").tag(30)
+                        }
+                        .pickerStyle(.menu)
+                        .controlSize(.small)
+
+                        Text(usageManager.liveModeEnabled
+                             ? "Live mode active (updates every 1 second)"
+                             : "Current auto refresh: \(refreshIntervalLabel(usageManager.refreshIntervalSeconds))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
                         Toggle(isOn: Binding(
                             get: { usageManager.shortcutEnabled },
                             set: { newValue in
@@ -1132,6 +1236,23 @@ struct UsageView: View {
             return .orange
         } else {
             return .red
+        }
+    }
+
+    func refreshIntervalLabel(_ seconds: Int) -> String {
+        switch seconds {
+        case 1200:
+            return "20 min"
+        case 600:
+            return "10 min"
+        case 300:
+            return "5 min"
+        case 60:
+            return "1 min"
+        case 30:
+            return "30 sec"
+        default:
+            return "\(seconds) sec"
         }
     }
 

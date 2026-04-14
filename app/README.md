@@ -9,7 +9,8 @@ A lightweight macOS menu bar app that displays your Claude.ai session and weekly
 - 🟢 **Real-time Usage Tracking**: Monitor session (5-hour) and weekly (7-day) usage
 - 🎨 **Color-Coded Menu Bar Icon**: Visual indication of usage levels (green/yellow/red)
 - 🔔 **Smart Notifications**: Alerts at 25%, 50%, 75%, and 90% usage thresholds
-- ⚡ **Auto-Refresh**: Updates every 5 minutes automatically
+- ⚡ **Flexible Auto-Refresh**: Choose 20 min, 10 min, 5 min, 1 min, or 30 sec
+- 🔴 **Live Mode**: Optional 1-second updates for intensive sessions
 - ⌨️ **Keyboard Shortcut**: Toggle popup with Cmd+U from anywhere
 - 🔒 **Privacy First**: All data stored locally on your Mac
 - 📊 **Pro Plan Support**: Shows weekly Sonnet usage for Pro subscribers
@@ -89,6 +90,12 @@ Access settings by clicking the gear icon in the popup:
 - Get notifications at 25%, 50%, 75%, 90% thresholds
 - Click "Test Notification" to verify it works
 
+### Refresh Rates & Live Mode
+- Select auto-refresh interval: 20 min, 10 min, 5 min, 1 min, or 30 sec
+- Enable **Live Mode** for 1-second updates
+- Live Mode temporarily overrides your selected interval until disabled
+- If API protection/rate limits increase, switch from Live Mode back to a slower interval
+
 ### Keyboard Shortcut (Cmd+U)
 - Toggle popup from anywhere on your Mac
 - Requires Accessibility permission
@@ -154,7 +161,8 @@ rm -rf build
 - Restart the app after granting permission
 
 ### Usage not updating
-- App auto-refreshes every 5 minutes
+- App auto-refreshes based on your selected interval
+- Live Mode refreshes every 1 second (if enabled)
 - Click the refresh button to update manually
 - If cookie expired, get a new one
 
