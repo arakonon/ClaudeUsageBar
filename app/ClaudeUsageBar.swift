@@ -233,22 +233,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func updateStatusIcon(percentage: Int, isLiveMode: Bool = false) {
         guard let button = statusItem.button else { return }
 
-        // Determine color based on percentage
-        let color: NSColor
-        if percentage < 70 {
-            color = NSColor(red: 0.13, green: 0.77, blue: 0.37, alpha: 1.0) // Green
-        } else if percentage < 90 {
-            color = NSColor(red: 1.0, green: 0.8, blue: 0.0, alpha: 1.0) // Yellow
+        if usageManager?.showStarIcon ?? true {
+            let color: NSColor
+            if percentage < 70 {
+                color = NSColor(red: 0.13, green: 0.77, blue: 0.37, alpha: 1.0)
+            } else if percentage < 90 {
+                color = NSColor(red: 1.0, green: 0.8, blue: 0.0, alpha: 1.0)
+            } else {
+                color = NSColor(red: 1.0, green: 0.23, blue: 0.19, alpha: 1.0)
+            }
+            button.image = createSparkIcon(color: color, showLiveBadge: isLiveMode)
+            button.imagePosition = .imageLeft
+            button.title = " \(percentage)%"
+            button.attributedTitle = NSAttributedString(string: " \(percentage)%")
+            statusItem.length = NSStatusItem.variableLength
         } else {
-            color = NSColor(red: 1.0, green: 0.23, blue: 0.19, alpha: 1.0) // Red
+            button.image = nil
+            button.imagePosition = .noImage
+
+            let text = NSMutableAttributedString(string: "\(percentage)%")
+            if isLiveMode {
+                let dot = NSImage(size: NSSize(width: 5, height: 5), flipped: false) { _ in
+                    NSColor(red: 0.13, green: 0.77, blue: 0.37, alpha: 1.0).setFill()
+                    NSBezierPath(ovalIn: NSRect(x: 0.5, y: 0.5, width: 4, height: 4)).fill()
+                    return true
+                }
+                let attachment = NSTextAttachment()
+                attachment.image = dot
+                attachment.bounds = CGRect(x: -4, y: 6, width: 5, height: 5)
+                text.append(NSAttributedString(attachment: attachment))
+            }
+            button.attributedTitle = text
+
+            let textWidth = ("\(percentage)%" as NSString).size(withAttributes: [
+                .font: NSFont.menuBarFont(ofSize: 12)
+            ]).width
+            statusItem.length = ceil(textWidth) + 10
         }
-
-        // Create spark icon with color
-        let sparkIcon = createSparkIcon(color: color, showLiveBadge: isLiveMode)
-
-        // Set image and title
-        button.image = sparkIcon
-        button.title = " \(percentage)%"
     }
 
     func createSparkIcon(color: NSColor, showLiveBadge: Bool = false) -> NSImage {
@@ -340,6 +361,7 @@ class UsageManager: ObservableObject {
     @Published var shortcutEnabled: Bool = true
     @Published var refreshIntervalSeconds: Int = 300
     @Published var liveModeEnabled: Bool = false
+    @Published var showStarIcon: Bool = true
 
     let availableRefreshIntervals: [Int] = [1200, 600, 300, 60, 30]
 
@@ -389,6 +411,12 @@ class UsageManager: ObservableObject {
         } else {
             refreshIntervalSeconds = 300
         }
+
+        if UserDefaults.standard.object(forKey: "show_star_icon") == nil {
+            showStarIcon = true
+        } else {
+            showStarIcon = UserDefaults.standard.bool(forKey: "show_star_icon")
+        }
     }
 
     func saveSettings() {
@@ -396,6 +424,7 @@ class UsageManager: ObservableObject {
         UserDefaults.standard.set(openAtLogin, forKey: "open_at_login")
         UserDefaults.standard.set(shortcutEnabled, forKey: "shortcut_enabled")
         UserDefaults.standard.set(refreshIntervalSeconds, forKey: "refresh_interval_seconds")
+        UserDefaults.standard.set(showStarIcon, forKey: "show_star_icon")
         UserDefaults.standard.synchronize()
     }
 
@@ -1087,6 +1116,24 @@ struct UsageView: View {
                             Text("Open at Login")
                                 .font(.caption)
                             Text("Launch app automatically when you log in")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+
+                    Toggle(isOn: Binding(
+                        get: { usageManager.showStarIcon },
+                        set: { newValue in
+                            usageManager.showStarIcon = newValue
+                            usageManager.saveSettings()
+                            usageManager.updatePercentages()
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Show Star Icon")
+                                .font(.caption)
+                            Text("Display the spark icon next to the percentage")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
