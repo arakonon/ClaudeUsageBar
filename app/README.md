@@ -9,7 +9,8 @@ A lightweight macOS menu bar app that displays your Claude.ai session and weekly
 - 🟢 **Real-time Usage Tracking**: Monitor session (5-hour) and weekly (7-day) usage
 - 🎨 **Color-Coded Menu Bar Icon**: Visual indication of usage levels (green/yellow/red)
 - 🔔 **Smart Notifications**: Alerts at 25%, 50%, 75%, and 90% usage thresholds
-- ⚡ **Flexible Auto-Refresh**: Choose 20 min, 10 min, 5 min, 1 min, or 30 sec
+- ⚡ **Flexible Auto-Refresh**: Smart auto modes, or a fixed 5 min, 1 min, or 30 sec interval
+- 🤖 **Auto Mode**: Refreshes every 30 sec while Claude Code is working, every 5 min otherwise
 - 🔴 **Live Mode**: Optional 1-second updates for intensive sessions
 - ⌨️ **Keyboard Shortcut**: Toggle popup with Cmd+U from anywhere
 - 🔒 **Privacy First**: All data stored locally on your Mac
@@ -91,7 +92,9 @@ Access settings by clicking the gear icon in the popup:
 - Click "Test Notification" to verify it works
 
 ### Refresh Rates & Live Mode
-- Select auto-refresh interval: 20 min, 10 min, 5 min, 1 min, or 30 sec
+- Select auto-refresh interval: Auto (Claude Code), Auto (Code + App), 5 min, 1 min, or 30 sec
+- **Auto (Claude Code)**: refreshes every 30 sec while Claude Code is working (detected via writes to `~/.claude/projects`), and every 5 min after 90 sec of inactivity
+- **Auto (Code + App)**: same as above, but also refreshes every 30 sec while the Claude desktop app is open
 - Enable **Live Mode** for 1-second updates
 - Live Mode temporarily overrides your selected interval until disabled
 - If API protection/rate limits increase, switch from Live Mode back to a slower interval

@@ -2,6 +2,143 @@ import SwiftUI
 import AppKit
 import WebKit
 import Carbon
+import CoreServices
+
+// Watches for Claude Code activity (transcript writes) and the Claude desktop app
+class ClaudeActivityMonitor {
+    static let desktopAppBundleId = "com.anthropic.claudefordesktop"
+    // Treat Claude Code as idle after this long without transcript writes
+    static let idleTimeout: TimeInterval = 90
+
+    private(set) var isCodeActive: Bool = false
+    private(set) var isDesktopAppRunning: Bool = false
+    var onChange: (() -> Void)?
+
+    private var eventStream: FSEventStreamRef?
+    private var idleTimer: Timer?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var lastCodeActivity: Date = .distantPast
+    private(set) var isRunning: Bool = false
+
+    func start() {
+        guard !isRunning else { return }
+        isRunning = true
+
+        startEventStream()
+
+        idleTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.checkIdle()
+        }
+
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            let observer = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                guard app?.bundleIdentifier == ClaudeActivityMonitor.desktopAppBundleId else { return }
+                self?.refreshDesktopAppState()
+            }
+            workspaceObservers.append(observer)
+        }
+        refreshDesktopAppState()
+
+        NSLog("👀 Activity monitor started")
+    }
+
+    func stop() {
+        guard isRunning else { return }
+        isRunning = false
+
+        if let stream = eventStream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            eventStream = nil
+        }
+
+        idleTimer?.invalidate()
+        idleTimer = nil
+
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach { center.removeObserver($0) }
+        workspaceObservers.removeAll()
+
+        isCodeActive = false
+        isDesktopAppRunning = false
+        lastCodeActivity = .distantPast
+
+        NSLog("👀 Activity monitor stopped")
+    }
+
+    private func startEventStream() {
+        // Watch ~/.claude (not ~/.claude/projects) so it also works if projects/ is created later
+        let claudeDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude").path
+        guard FileManager.default.fileExists(atPath: claudeDir) else {
+            NSLog("⚠️ \(claudeDir) not found, Claude Code activity detection disabled")
+            return
+        }
+
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+
+        let callback: FSEventStreamCallback = { _, info, numEvents, eventPaths, _, _ in
+            guard let info = info else { return }
+            let monitor = Unmanaged<ClaudeActivityMonitor>.fromOpaque(info).takeUnretainedValue()
+            let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
+            if paths.prefix(numEvents).contains(where: { $0.contains("/projects/") && $0.hasSuffix(".jsonl") }) {
+                monitor.registerCodeActivity()
+            }
+        }
+
+        let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer)
+        guard let stream = FSEventStreamCreate(
+            kCFAllocatorDefault,
+            callback,
+            &context,
+            [claudeDir] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            1.0,
+            flags
+        ) else {
+            NSLog("❌ Failed to create FSEvent stream")
+            return
+        }
+
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+        FSEventStreamStart(stream)
+        eventStream = stream
+    }
+
+    private func registerCodeActivity() {
+        lastCodeActivity = Date()
+        if !isCodeActive {
+            isCodeActive = true
+            NSLog("🤖 Claude Code activity detected")
+            onChange?()
+        }
+    }
+
+    private func checkIdle() {
+        if isCodeActive && Date().timeIntervalSince(lastCodeActivity) > ClaudeActivityMonitor.idleTimeout {
+            isCodeActive = false
+            NSLog("💤 Claude Code idle")
+            onChange?()
+        }
+    }
+
+    private func refreshDesktopAppState() {
+        let running = !NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeActivityMonitor.desktopAppBundleId).isEmpty
+        if running != isDesktopAppRunning {
+            isDesktopAppRunning = running
+            NSLog(running ? "🖥️ Claude desktop app running" : "🖥️ Claude desktop app closed")
+            onChange?()
+        }
+    }
+}
 
 // Main entry point
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -11,6 +148,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var eventMonitor: Any?
     var hotKeyRef: EventHotKeyRef?
     var refreshTimer: Timer?
+    let activityMonitor = ClaudeActivityMonitor()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // NSUserNotification (deprecated but works without permissions for unsigned apps)
@@ -42,6 +180,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Fetch initial data
         usageManager.fetchUsage()
+
+        // Switch refresh speed in auto modes when Claude activity changes
+        activityMonitor.onChange = { [weak self] in
+            self?.usageManager.updateAutoState()
+        }
+        updateActivityMonitor()
 
         // Set up refresh timer based on settings
         configureRefreshTimer()
@@ -79,9 +223,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if usageManager.liveModeEnabled {
             NSLog("⚡ Live mode active, refresh every 1 second")
+        } else if usageManager.isAutoMode {
+            NSLog("🔄 Auto mode (\(usageManager.autoBoostActive ? "Claude active" : "idle")), refresh every \(Int(interval)) seconds")
         } else {
             NSLog("⏱️ Refresh interval set to \(Int(interval)) seconds")
         }
+    }
+
+    func updateActivityMonitor() {
+        if usageManager.isAutoMode {
+            activityMonitor.start()
+        } else {
+            activityMonitor.stop()
+        }
+        usageManager.updateAutoState(reconfigure: false)
     }
 
     func checkAccessibilityPermissions() {
@@ -167,6 +322,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
         refreshTimer = nil
+        activityMonitor.stop()
         unregisterGlobalHotKey()
     }
 
@@ -362,8 +518,19 @@ class UsageManager: ObservableObject {
     @Published var refreshIntervalSeconds: Int = 300
     @Published var liveModeEnabled: Bool = false
     @Published var showStarIcon: Bool = true
+    @Published var autoBoostActive: Bool = false
 
-    let availableRefreshIntervals: [Int] = [1200, 600, 300, 60, 30]
+    // Auto modes are stored as negative values in refreshIntervalSeconds
+    static let autoCodeMode = -1
+    static let autoCodeAndAppMode = -2
+    static let autoActiveInterval = 30
+    static let autoIdleInterval = 300
+
+    let availableRefreshIntervals: [Int] = [autoCodeMode, autoCodeAndAppMode, 300, 60, 30]
+
+    var isAutoMode: Bool {
+        refreshIntervalSeconds == UsageManager.autoCodeMode || refreshIntervalSeconds == UsageManager.autoCodeAndAppMode
+    }
 
     private var statusItem: NSStatusItem?
     private var sessionCookie: String = ""
@@ -432,6 +599,9 @@ class UsageManager: ObservableObject {
         if liveModeEnabled {
             return 1.0
         }
+        if isAutoMode {
+            return TimeInterval(autoBoostActive ? UsageManager.autoActiveInterval : UsageManager.autoIdleInterval)
+        }
         return TimeInterval(refreshIntervalSeconds)
     }
 
@@ -439,8 +609,26 @@ class UsageManager: ObservableObject {
         guard availableRefreshIntervals.contains(seconds) else { return }
         refreshIntervalSeconds = seconds
         saveSettings()
+        delegate?.updateActivityMonitor()
         delegate?.configureRefreshTimer()
         fetchUsage()
+    }
+
+    // Recompute whether auto mode should refresh fast; on change, reschedule and fetch
+    // immediately (on becoming idle this captures the final usage of the work session)
+    func updateAutoState(reconfigure: Bool = true) {
+        var boost = false
+        if isAutoMode, let monitor = delegate?.activityMonitor {
+            boost = monitor.isCodeActive
+                || (refreshIntervalSeconds == UsageManager.autoCodeAndAppMode && monitor.isDesktopAppRunning)
+        }
+        guard boost != autoBoostActive else { return }
+        autoBoostActive = boost
+
+        if reconfigure {
+            delegate?.configureRefreshTimer()
+            fetchUsage()
+        }
     }
 
     func setLiveMode(_ enabled: Bool) {
@@ -1165,8 +1353,9 @@ struct UsageView: View {
                                 usageManager.setRefreshInterval(newValue)
                             }
                         )) {
-                            Text("20 min").tag(1200)
-                            Text("10 min").tag(600)
+                            Text("Auto (Claude Code)").tag(UsageManager.autoCodeMode)
+                            Text("Auto (Code + App)").tag(UsageManager.autoCodeAndAppMode)
+                            Divider()
                             Text("5 min").tag(300)
                             Text("1 min").tag(60)
                             Text("30 sec").tag(30)
@@ -1174,9 +1363,7 @@ struct UsageView: View {
                         .pickerStyle(.menu)
                         .controlSize(.small)
 
-                        Text(usageManager.liveModeEnabled
-                             ? "Live mode active (updates every 1 second)"
-                             : "Current auto refresh: \(refreshIntervalLabel(usageManager.refreshIntervalSeconds))")
+                        Text(refreshStatusText())
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1273,12 +1460,20 @@ struct UsageView: View {
         }
     }
 
+    func refreshStatusText() -> String {
+        if usageManager.liveModeEnabled {
+            return "Live mode active (updates every 1 second)"
+        }
+        if usageManager.isAutoMode {
+            return usageManager.autoBoostActive
+                ? "Auto: Claude active – every \(refreshIntervalLabel(UsageManager.autoActiveInterval))"
+                : "Auto: idle – every \(refreshIntervalLabel(UsageManager.autoIdleInterval))"
+        }
+        return "Current auto refresh: \(refreshIntervalLabel(usageManager.refreshIntervalSeconds))"
+    }
+
     func refreshIntervalLabel(_ seconds: Int) -> String {
         switch seconds {
-        case 1200:
-            return "20 min"
-        case 600:
-            return "10 min"
         case 300:
             return "5 min"
         case 60:
