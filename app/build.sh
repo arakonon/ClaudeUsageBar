@@ -76,5 +76,15 @@ fi
 
 echo "Build successful!"
 echo "App bundle created at: $APP_PATH"
+
+# Install to /Applications (keep build/ copy for create_dmg.sh)
+INSTALL_PATH="/Applications/$APP_NAME"
+echo "Installing to $INSTALL_PATH..."
+osascript -e 'quit app id "com.claude.usagebar"' 2>/dev/null
+pkill -x ClaudeUsageBar 2>/dev/null
+sleep 1
+rm -rf "$INSTALL_PATH"
+ditto "$APP_PATH" "$INSTALL_PATH"
+
 echo "Launching app..."
-open "$APP_PATH"
+open "$INSTALL_PATH"
